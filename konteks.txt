@@ -1,0 +1,597 @@
+=== ISI FILE ===
+==> ./src/core/MidiPlayer.cpp <==
+
+==> ./src/core/MidiHandler.cpp <==
+
+==> ./src/core/KeySimulator.cpp <==
+#include "core/KeySimulator.h"
+
+#ifdef _WIN32
+    #include <windows.h>
+#elif __linux__
+    #include <X11/Xlib.h>
+    #include <X11/extensions/XTest.h>
+    #include <X11/keysym.h>
+    // Static display pointer agar tidak buka-tutup koneksi X11 terus menerus
+    static Display* display = nullptr; 
+#endif
+
+namespace Core {
+
+    void KeySimulator::PressKey(int keyCode) {
+        #ifdef _WIN32
+            // keyCode di Windows adalah Virtual-Key Code (misal 0x41 untuk 'A')
+            INPUT input = {0};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = keyCode;
+            SendInput(1, &input, sizeof(INPUT));
+            
+        #elif __linux__
+            // keyCode di Linux sebaiknya menggunakan X11 KeySym (misal XK_a)
+            if (!display) display = XOpenDisplay(nullptr);
+            if (display) {
+                KeyCode kc = XKeysymToKeycode(display, keyCode);
+                XTestFakeKeyEvent(display, kc, True, 0); // True = Tekan
+                XFlush(display);
+            }
+        #endif
+    }
+
+    void KeySimulator::ReleaseKey(int keyCode) {
+        #ifdef _WIN32
+            INPUT input = {0};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = keyCode;
+            input.ki.dwFlags = KEYEVENTF_KEYUP; // Flag untuk lepas
+            SendInput(1, &input, sizeof(INPUT));
+            
+        #elif __linux__
+            if (display) {
+                KeyCode kc = XKeysymToKeycode(display, keyCode);
+                XTestFakeKeyEvent(display, kc, False, 0); // False = Lepas
+                XFlush(display);
+            }
+        #endif
+    }
+}
+==> ./src/main.cpp <==
+#include <JuceHeader.h>
+#include "gui/MainComponent.h"
+
+class MidiPianoApp : public juce::JUCEApplication {
+public:
+    const juce::String getApplicationName() override    { return "Midi Piano KeyMapper"; }
+    const juce::String getApplicationVersion() override { return "1.0.0"; }
+    
+    void initialise(const juce::String&) override {
+        mainWindow.reset(new MainWindow(getApplicationName()));
+    }
+    void shutdown() override { mainWindow = nullptr; }
+    
+    class MainWindow : public juce::DocumentWindow {
+    public:
+        MainWindow(juce::String name)
+            : DocumentWindow(name, juce::Colour(0xff0f0f1a), allButtons) {
+            setUsingNativeTitleBar(true);
+            setContentOwned(new MainComponent(), true);
+            setResizable(true, true);
+            centreWithSize(1280, 800);
+            setVisible(true);
+        }
+        void closeButtonPressed() override {
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+    };
+    
+private:
+    std::unique_ptr<MainWindow> mainWindow;
+};
+
+START_JUCE_APPLICATION(MidiPianoApp)
+==> ./src/gui/PianoKeyboard.cpp <==
+#include "gui/PianoKeyboard.h"
+
+PianoKeyboard::PianoKeyboard() {
+    setOpaque(false);
+    // Contoh mapping awal (bisa diubah nanti)
+    mappedKeys = { 48, 50, 52, 53, 55, 57, 59 }; // C3, D3, E3, F3, G3, A3, B3
+    rebuildKeys();
+}
+
+PianoKeyboard::~PianoKeyboard() {}
+
+void PianoKeyboard::resized() { rebuildKeys(); }
+
+void PianoKeyboard::setStartNote(int note) {
+    startNote = note;
+    rebuildKeys();
+    repaint();
+}
+
+void PianoKeyboard::setNumWhiteKeys(int count) {
+    numWhiteKeys = count;
+    rebuildKeys();
+    repaint();
+}
+
+void PianoKeyboard::setMappedKeys(const std::set<int>& keys) {
+    mappedKeys = keys;
+    repaint();
+}
+
+void PianoKeyboard::setActiveKeys(const std::set<int>& keys) {
+    activeKeys = keys;
+    repaint();
+}
+
+bool PianoKeyboard::isBlackKey(int note) {
+    int n = note % 12;
+    return n == 1 || n == 3 || n == 6 || n == 8 || n == 10;
+}
+
+juce::String PianoKeyboard::getNoteName(int note) {
+    static const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    int octave = (note / 12) - 1;
+    return juce::String(names[note % 12]) + juce::String(octave);
+}
+
+void PianoKeyboard::rebuildKeys() {
+    keys.clear();
+    auto area = getLocalBounds().toFloat();
+    if (area.getWidth() < 10) return;
+    
+    float whiteKeyW = area.getWidth() / (float)numWhiteKeys;
+    float blackKeyW = whiteKeyW * 0.62f;
+    float blackKeyH = area.getHeight() * 0.62f;
+    
+    // Cari C terdekat dari startNote
+    int firstC = startNote - (startNote % 12);
+    
+    // Gambar white keys
+    int whiteIdx = 0;
+    for (int n = firstC; whiteIdx < numWhiteKeys; n++) {
+        if (isBlackKey(n)) continue;
+        KeyInfo k;
+        k.note = n;
+        k.isBlack = false;
+        k.bounds = { area.getX() + whiteIdx * whiteKeyW,
+                     area.getY(),
+                     whiteKeyW - 1.0f,
+                     area.getHeight() };
+        keys.push_back(k);
+        whiteIdx++;
+    }
+    
+    // Gambar black keys
+    for (int n = firstC; n < firstC + numWhiteKeys * 2; n++) {
+        if (!isBlackKey(n)) continue;
+        int prevWhite = n - 1;
+        for (auto& wk : keys) {
+            if (!wk.isBlack && wk.note == prevWhite) {
+                KeyInfo k;
+                k.note = n;
+                k.isBlack = true;
+                k.bounds = { wk.bounds.getRight() - blackKeyW * 0.5f,
+                             area.getY(),
+                             blackKeyW,
+                             blackKeyH };
+                keys.push_back(k);
+                break;
+            }
+        }
+    }
+}
+
+void PianoKeyboard::paint(juce::Graphics& g) {
+    // Draw white keys
+    for (auto& k : keys) {
+        if (k.isBlack) continue;
+        bool mapped = mappedKeys.count(k.note) > 0;
+        bool active = activeKeys.count(k.note) > 0;
+        
+        // Key body
+        g.setColour(active ? juce::Colour(0xffffeb3b) : juce::Colours::white);
+        g.fillRect(k.bounds);
+        g.setColour(juce::Colour(0xff333344));
+        g.drawRect(k.bounds, 1.0f);
+        
+        // Note name (top)
+        g.setColour(juce::Colours::black);
+        g.setFont(juce::Font(11.0f, juce::Font::bold));
+        g.drawText(getNoteName(k.note),
+                   k.bounds.reduced(2).removeFromTop(20),
+                   juce::Justification::centredTop);
+        
+        // Mapped badge (orange)
+        if (mapped) {
+            auto badge = juce::Rectangle<float>(
+                k.bounds.getX() + 2, 
+                k.bounds.getBottom() - 40,
+                k.bounds.getWidth() - 4, 
+                16);
+            g.setColour(juce::Colour(0xffffa726));
+            g.fillRoundedRectangle(badge, 3.0f);
+            g.setColour(juce::Colours::black);
+            g.setFont(juce::Font(10.0f, juce::Font::bold));
+            g.drawText("KEY", badge, juce::Justification::centred);
+        }
+        
+        // Note number (bottom)
+        g.setColour(juce::Colour(0xff666677));
+        g.setFont(juce::Font(9.0f));
+        g.drawText(juce::String(k.note),
+                   k.bounds.reduced(2).removeFromBottom(15),
+                   juce::Justification::centred);
+    }
+    
+    // Draw black keys on top
+    for (auto& k : keys) {
+        if (!k.isBlack) continue;
+        bool mapped = mappedKeys.count(k.note) > 0;
+        bool active = activeKeys.count(k.note) > 0;
+        
+        g.setColour(active ? juce::Colour(0xffffeb3b) : juce::Colour(0xff1a1a1a));
+        g.fillRoundedRectangle(k.bounds, 2.0f);
+        
+        // Note name
+        g.setColour(juce::Colours::white);
+        g.setFont(juce::Font(9.0f, juce::Font::bold));
+        g.drawText(getNoteName(k.note),
+                   k.bounds.reduced(1).removeFromTop(15),
+                   juce::Justification::centredTop);
+    }
+}
+==> ./src/gui/MainComponent.cpp <==
+#include "gui/MainComponent.h"
+
+namespace Theme {
+    const juce::Colour bg          { 0xff0f0f1a };
+    const juce::Colour panelBg     { 0xff1a1a2e };
+    const juce::Colour panelBorder { 0xff2a2a3e };
+    const juce::Colour textPrimary { 0xffe0e0e0 };
+    const juce::Colour textMuted   { 0xff888899 };
+    const juce::Colour accent      { 0xffffa726 };
+    const juce::Colour accentDark  { 0xffff8f00 };
+}
+
+MainComponent::MainComponent() {
+    setupStyle();
+    
+    // Tabs
+    for (auto* b : {&tabMapping, &tabLatency, &tabSandbox, &tabGuide}) {
+        b->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        b->setColour(juce::TextButton::textColourOffId, Theme::textMuted);
+        b->setColour(juce::TextButton::textColourOnId, Theme::accent);
+        addAndMakeVisible(b);
+    }
+    tabMapping.setToggleState(true, juce::dontSendNotification);
+    
+    // Export button (accent colored)
+    exportBtn.setColour(juce::TextButton::buttonColourId, Theme::accent);
+    exportBtn.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    addAndMakeVisible(exportBtn);
+    
+    // MIDI controls
+    for (auto* l : {&midiInputLabel, &channelLabel, &soundLabel}) {
+        l->setColour(juce::Label::textColourId, Theme::textMuted);
+        l->setFont(juce::Font(13.0f));
+        addAndMakeVisible(l);
+    }
+    for (auto* c : {&midiInputCombo, &channelCombo, &soundCombo}) {
+        c->setColour(juce::ComboBox::backgroundColourId, Theme::panelBg);
+        c->setColour(juce::ComboBox::textColourId, Theme::textPrimary);
+        c->setColour(juce::ComboBox::outlineColourId, Theme::panelBorder);
+        addAndMakeVisible(c);
+    }
+    midiInputCombo.addItem("All Connected MIDI Devices (0)", 1);
+    midiInputCombo.setSelectedId(1);
+    channelCombo.addItem("Omni (All)", 1);
+    channelCombo.setSelectedId(1);
+    soundCombo.addItem("Acoustic Grand Piano", 1);
+    soundCombo.setSelectedId(1);
+    
+    // Piano panel header
+    pianoTitle.setColour(juce::Label::textColourId, Theme::textPrimary);
+    pianoTitle.setFont(juce::Font(16.0f, juce::Font::bold));
+    addAndMakeVisible(pianoTitle);
+    
+    pianoSubtitle.setColour(juce::Label::textColourId, Theme::textMuted);
+    pianoSubtitle.setFont(juce::Font(12.0f));
+    addAndMakeVisible(pianoSubtitle);
+    
+    for (auto* b : {&octaveDownBtn, &octaveUpBtn, &keys49Btn, &keys61Btn, &keys88Btn}) {
+        b->setColour(juce::TextButton::buttonColourId, Theme::panelBg);
+        b->setColour(juce::TextButton::textColourOffId, Theme::textPrimary);
+        addAndMakeVisible(b);
+    }
+    octaveLabel.setColour(juce::Label::textColourId, Theme::textPrimary);
+    octaveLabel.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(octaveLabel);
+    
+    keys61Btn.setColour(juce::TextButton::buttonColourId, Theme::accent);
+    keys61Btn.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    
+    addAndMakeVisible(pianoKeyboard);
+    
+    // Legend
+    for (auto* l : {&legendWhite, &legendBlack, &legendMapped}) {
+        l->setColour(juce::Label::textColourId, Theme::textMuted);
+        l->setFont(juce::Font(12.0f));
+        addAndMakeVisible(l);
+    }
+    
+    // Bottom matrix
+    matrixTitle.setColour(juce::Label::textColourId, Theme::textPrimary);
+    matrixTitle.setFont(juce::Font(15.0f, juce::Font::bold));
+    addAndMakeVisible(matrixTitle);
+    
+    matrixSub.setColour(juce::Label::textColourId, Theme::textMuted);
+    matrixSub.setFont(juce::Font(11.0f));
+    addAndMakeVisible(matrixSub);
+    
+    activeKeys.setColour(juce::Label::textColourId, Theme::accent);
+    activeKeys.setFont(juce::Font(12.0f));
+    activeKeys.setJustificationType(juce::Justification::centredRight);
+    addAndMakeVisible(activeKeys);
+    
+    setSize(1280, 800);
+}
+
+MainComponent::~MainComponent() {}
+
+void MainComponent::setupStyle() {
+    juce::LookAndFeel_V4::setDefaultLookAndFeel(nullptr);
+}
+
+void MainComponent::paint(juce::Graphics& g) {
+    g.fillAll(Theme::bg);
+    
+    // Top bar
+    g.setColour(Theme::panelBg);
+    g.fillRect(0, 0, getWidth(), 60);
+    g.setColour(Theme::panelBorder);
+    g.drawHorizontalLine(60, 0, (float)getWidth());
+    
+    // Top bar: logo + title
+    g.setColour(Theme::accent);
+    g.fillRoundedRectangle(20, 15, 30, 30, 6.0f);
+    g.setColour(juce::Colours::black);
+    g.setFont(juce::Font(20.0f, juce::Font::bold));
+    g.drawText("♪", 20, 15, 30, 30, juce::Justification::centred);
+    
+    g.setColour(Theme::textPrimary);
+    g.setFont(juce::Font(18.0f, juce::Font::bold));
+    g.drawText("MidiKeyMapper Studio", 60, 10, 300, 40, juce::Justification::centredLeft);
+    
+    // Bottom section separator
+    g.setColour(Theme::panelBorder);
+    g.drawHorizontalLine(getHeight() - 180, 0, (float)getWidth());
+}
+
+void MainComponent::resized() {
+    auto area = getLocalBounds();
+    
+    // ========= TOP BAR (60px) =========
+    auto topBar = area.removeFromTop(60);
+    auto tabs = topBar.withTrimmedLeft(360).withTrimmedRight(200);
+    int tabW = tabs.getWidth() / 4;
+    tabMapping.setBounds(tabs.removeFromLeft(tabW));
+    tabLatency.setBounds(tabs.removeFromLeft(tabW));
+    tabSandbox.setBounds(tabs.removeFromLeft(tabW));
+    tabGuide.setBounds(tabs);
+    exportBtn.setBounds(topBar.removeFromRight(200).reduced(10, 12));
+    
+    // ========= MIDI CONTROL BAR (50px) =========
+    auto midiBar = area.removeFromTop(50).reduced(20, 10);
+    midiInputLabel.setBounds(midiBar.removeFromLeft(80));
+    midiInputCombo.setBounds(midiBar.removeFromLeft(220));
+    midiBar.removeFromLeft(20);
+    channelLabel.setBounds(midiBar.removeFromLeft(65));
+    channelCombo.setBounds(midiBar.removeFromLeft(120));
+    midiBar.removeFromLeft(20);
+    soundLabel.setBounds(midiBar.removeFromLeft(50));
+    soundCombo.setBounds(midiBar.removeFromLeft(180));
+    
+    // ========= BOTTOM MATRIX PANEL (180px) =========
+    auto bottomPanel = area.removeFromBottom(180);
+    bottomPanel.reduce(20, 10);
+    auto bottomHeader = bottomPanel.removeFromTop(30);
+    matrixTitle.setBounds(bottomHeader.removeFromLeft(300));
+    activeKeys.setBounds(bottomHeader.removeFromRight(100));
+    matrixSub.setBounds(bottomPanel.removeFromTop(20));
+    // (Kotak keyboard matrix akan ditambahkan nanti)
+    
+    // ========= MAIN PIANO PANEL =========
+    auto pianoPanel = area.reduced(20, 10);
+    
+    // Panel header (dalam panel piano)
+    auto panelHeader = pianoPanel.removeFromTop(40);
+    panelHeader.reduce(15, 0);
+    pianoTitle.setBounds(panelHeader.removeFromLeft(180));
+    pianoSubtitle.setBounds(panelHeader.removeFromLeft(180));
+    
+    // Octave controls (kanan)
+    auto rightControls = panelHeader.removeFromRight(280);
+    octaveDownBtn.setBounds(rightControls.removeFromLeft(30));
+    octaveLabel.setBounds(rightControls.removeFromLeft(80));
+    octaveUpBtn.setBounds(rightControls.removeFromLeft(30));
+    
+    // Key count toggle
+    auto keyToggle = pianoPanel.removeFromTop(30).withTrimmedRight(20);
+    auto toggleRight = keyToggle.removeFromRight(280);
+    int kw = toggleRight.getWidth() / 3;
+    keys49Btn.setBounds(toggleRight.removeFromLeft(kw).reduced(2));
+    keys61Btn.setBounds(toggleRight.removeFromLeft(kw).reduced(2));
+    keys88Btn.setBounds(toggleRight.reduced(2));
+    
+    // ========= PIANO KEYBOARD =========
+    auto keyboardArea = pianoPanel.reduced(20, 10);
+    auto legendRow = keyboardArea.removeFromBottom(25);
+    legendWhite.setBounds(legendRow.removeFromLeft(100));
+    legendBlack.setBounds(legendRow.removeFromLeft(100));
+    legendMapped.setBounds(legendRow.removeFromLeft(230));
+    
+    pianoKeyboard.setBounds(keyboardArea);
+}
+==> ./src/gui/AppWindow.cpp <==
+
+==> ./src/utils/LatencyTimer.cpp <==
+
+==> ./README.md <==
+
+==> ./CMakeLists.txt <==
+cmake_minimum_required(VERSION 3.22)
+project(MidiPiano VERSION 1.0.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(FetchContent)
+FetchContent_Declare(
+    JUCE
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG 7.0.9
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(JUCE)
+
+juce_add_gui_app(MidiPiano
+    PRODUCT_NAME "Midi Piano KeyMapper"
+)
+
+juce_generate_juce_header(MidiPiano)
+
+target_sources(MidiPiano PRIVATE
+    src/main.cpp
+    src/gui/MainComponent.cpp
+    src/gui/PianoKeyboard.cpp
+)
+
+target_include_directories(MidiPiano PRIVATE include)
+
+target_compile_definitions(MidiPiano PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_APPLICATION_NAME_STRING="Midi Piano KeyMapper"
+    JUCE_APPLICATION_VERSION_STRING="1.0.0"
+)
+
+target_link_libraries(MidiPiano PRIVATE
+    juce::juce_audio_utils
+    juce::juce_gui_extra
+    PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+==> ./include/core/MidiPlayer.h <==
+
+==> ./include/core/MidiHandler.h <==
+
+==> ./include/core/KeySimulator.h <==
+#pragma once
+
+namespace Core {
+    class KeySimulator {
+    public:
+        // Fungsi untuk menekan tombol (bisa pakai karakter atau virtual key code)
+        static void PressKey(int keyCode);
+        
+        // Fungsi untuk melepas tombol
+        static void ReleaseKey(int keyCode);
+    };
+}
+==> ./include/gui/PianoKeyboard.h <==
+#pragma once
+#include <JuceHeader.h>
+#include <set>
+#include <vector>
+
+class PianoKeyboard : public juce::Component {
+public:
+    PianoKeyboard();
+    ~PianoKeyboard() override;
+    
+    void paint(juce::Graphics&) override;
+    void resized() override;
+    
+    void setStartNote(int note);
+    void setNumWhiteKeys(int count);
+    void setMappedKeys(const std::set<int>& keys);
+    void setActiveKeys(const std::set<int>& keys);
+    
+private:
+    struct KeyInfo {
+        int note;
+        bool isBlack;
+        juce::Rectangle<float> bounds;
+    };
+    
+    int startNote = 36;       // C2
+    int numWhiteKeys = 22;
+    std::set<int> mappedKeys;
+    std::set<int> activeKeys;
+    std::vector<KeyInfo> keys;
+    
+    void rebuildKeys();
+    static bool isBlackKey(int note);
+    static juce::String getNoteName(int note);
+    
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PianoKeyboard)
+};
+==> ./include/gui/AppWindow.h <==
+
+==> ./include/gui/MainComponent.h <==
+#pragma once
+#include <JuceHeader.h>
+#include "PianoKeyboard.h"
+
+class MainComponent : public juce::Component {
+public:
+    MainComponent();
+    ~MainComponent() override;
+    void paint(juce::Graphics&) override;
+    void resized() override;
+    
+private:
+    // Tab buttons
+    juce::TextButton tabMapping   {"Mapping & Piano GUI"};
+    juce::TextButton tabLatency   {"Latency & Delay Timer"};
+    juce::TextButton tabSandbox   {"Game & Typing Sandbox"};
+    juce::TextButton tabGuide     {"Guide"};
+    juce::TextButton exportBtn    {"Export Native Script"};
+    
+    // MIDI controls
+    juce::Label      midiInputLabel {"", "MIDI Input:"};
+    juce::ComboBox   midiInputCombo;
+    juce::Label      channelLabel   {"", "Channel:"};
+    juce::ComboBox   channelCombo;
+    juce::Label      soundLabel     {"", "Sound:"};
+    juce::ComboBox   soundCombo;
+    
+    // Piano panel header
+    juce::Label      pianoTitle   {"", "Interactive Piano Keybed"};
+    juce::Label      pianoSubtitle{"", "Click keys to play & assign"};
+    juce::TextButton octaveDownBtn {"<"};
+    juce::TextButton octaveUpBtn   {">"};
+    juce::Label      octaveLabel   {"", "Octave 2"};
+    juce::TextButton keys49Btn {"49-Key"};
+    juce::TextButton keys61Btn {"61-Key"};
+    juce::TextButton keys88Btn {"88-Key"};
+    
+    PianoKeyboard pianoKeyboard;
+    
+    // Legend
+    juce::Label legendWhite {"", "\u25CB White Keys"};
+    juce::Label legendBlack {"", "\u25CB Black Keys"};
+    juce::Label legendMapped{"", "\u25CF Active / Mapped Key Badge"};
+    
+    // Bottom keyboard matrix panel
+    juce::Label matrixTitle {"", "Simulated PC Keyboard Output Matrix"};
+    juce::Label matrixSub   {"", "Keys light up when triggered by your piano"};
+    juce::Label activeKeys  {"", "Active Keys: 0"};
+    
+    void setupStyle();
+    
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
+};
+==> ./include/utils/LatencyTimer.h <==
