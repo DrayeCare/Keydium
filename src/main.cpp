@@ -29,6 +29,15 @@ public:
         void closeButtonPressed() override {
             JUCEApplication::getInstance()->systemRequestedQuit();
         }
+
+        void activeWindowStatusChanged() override {
+            DocumentWindow::activeWindowStatusChanged();
+            if (!isActiveWindow()) {
+                if (auto* mainComp = dynamic_cast<MainComponent*>(getContentComponent())) {
+                    mainComp->releaseAllPhysicalKeys();
+                }
+            }
+        }
     };
 
 private:

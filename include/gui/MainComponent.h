@@ -2,15 +2,39 @@
 #include <JuceHeader.h>
 #include <map>
 #include <set>
+#include <memory>
 #include "PianoKeyboard.h"
+#include "core/PianoAudioEngine.h"
+#include "core/NoteTracker.h"
 
-class MainComponent : public juce::Component {
+class MainComponent : public juce::Component,
+                      public juce::KeyListener,
+                      public juce::FocusChangeListener {
 public:
     MainComponent();
     ~MainComponent() override;
+
     void paint(juce::Graphics&) override;
     void resized() override;
-    
+
+    // Component keyboard & focus overrides
+    bool keyPressed(const juce::KeyPress& key) override;
+    bool keyStateChanged(bool isKeyDown) override;
+    void focusLost(FocusChangeType cause) override;
+
+    // KeyListener overrides
+    bool keyPressed(const juce::KeyPress& key, juce::Component* originatingComponent) override;
+    bool keyStateChanged(bool isKeyDown, juce::Component* originatingComponent) override;
+
+    // FocusChangeListener override
+    void globalFocusChanged(juce::Component* focusedComponent) override;
+
+    // Release all physical keyboard notes (e.g. window deactivated)
+    void releaseAllPhysicalKeys();
+
+    // Release all notes from all sources (e.g. audio toggled off)
+    void releaseAllNotes();
+
 private:
     enum class ActiveTab { Mapping, Latency, Sandbox, Guide };
     ActiveTab currentTab = ActiveTab::Mapping;
@@ -59,9 +83,27 @@ private:
     std::map<int, juce::String> noteToKeyMap;
     std::set<juce::String> activePcKeys;
     juce::Rectangle<int> matrixArea;
-    
+
+    // ── Note Tracker & Input Routing ──────────────────────────────────────────
+    Core::NoteTracker noteTracker;
+
+    // ── Audio Engine ──────────────────────────────────────────────────────────
+    std::unique_ptr<Core::PianoAudioEngine> audioEngine;
+
+    // Audio toggle button
+    juce::TextButton audioToggleBtn {"🔊 Audio: ON"};
+
+    // Helper to resolve the SoundFont path at runtime.
+    static juce::String resolveSoundFontPath();
+
+    bool handleKeyPress(const juce::KeyPress& key);
+    bool handleKeyStateChange(bool isKeyDown);
+    bool isTextInputActive() const;
+    void syncVisualKeys();
+
     void setupStyle();
     void setupCallbacks();
+    void setupAudio();
     void switchTab(ActiveTab newTab);
     void setKeyCountMode(int whiteKeys, juce::TextButton& activeBtn);
     void drawKeyboardMatrix(juce::Graphics& g, juce::Rectangle<int> bounds);
