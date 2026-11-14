@@ -1,10 +1,10 @@
 <div align="center">
 
-# 🎹 MidiPiano
+# 🎹 Keydium
 
-**MIDI-to-Keyboard Mapper & Player**
+**Your MIDI. Your Keys.**
 
-*A desktop bridge connecting physical MIDI instruments and `.mid` files to keyboard-based applications and games.*
+*A universal, low-latency MIDI-to-keyboard bridge for games and desktop applications.*
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=c%2B%2B&logoColor=white)
 ![JUCE](https://img.shields.io/badge/JUCE-7.0.9-8CC63F?style=flat-square)
@@ -15,7 +15,7 @@
 
 ---
 
-**MidiPiano** is a desktop application designed to translate MIDI signals into simulated computer keyboard inputs. Whether performing live on a digital piano or automating playback from standard MIDI files, it enables seamless control over games and software that rely solely on keyboard inputs.
+**Keydium** is a desktop application designed to translate MIDI signals into simulated computer keyboard inputs. Whether performing live on a digital piano or automating playback from standard `.mid` files, Keydium acts as a seamless bridge to control games and software that rely solely on keyboard inputs.
 
 > [!NOTE]
 > **Early Prototype Notice:** The current repository contains an initial GUI prototype. While the virtual piano and mapping interface are functional for visual inspection, the backend pipeline for physical MIDI input and OS-level keyboard simulation is still under active development.
@@ -31,7 +31,7 @@ Connect a physical MIDI controller or digital piano to play directly in real tim
 * **Custom Software** — Map MIDI keys to shortcuts, macros, or other keyboard-driven apps.
 
 ### 2. MIDI File Auto Play *(Planned)*
-Load standard `.mid` files and let MidiPiano perform them automatically via simulated keystrokes.
+Load standard `.mid` files and let Keydium perform them automatically via simulated keystrokes.
 * **File Parsing:** Load and inspect multi-track `.mid` files.
 * **Accurate Timing:** Handle note durations, tempo, and playback controls.
 * **Profile-Driven:** Output uses the exact same mapping rules as live performance.
@@ -54,13 +54,13 @@ Load standard `.mid` files and let MidiPiano perform them automatically via simu
 
 ## ⚙️ Architecture & Workflow
 
-Both live performance and automated file playback share a unified mapping engine, ensuring you only need to configure a profile once.
+Both live performance and automated file playback share a unified mapping engine inside **Keydium**, ensuring you only need to configure a profile once.
 
 ```mermaid
 flowchart TD
     A[🎹 Live MIDI Keyboard] --> C[MIDI Processing]
     B[📄 MIDI File .mid] --> C
-    C --> D{Mapping Engine}
+    C --> D{Keydium Mapping Engine}
     E[🎮 Game Profile] -.-> D
     F[🛠️ Custom Mapping] -.-> D
     D --> G[⌨️ Keyboard Output]
