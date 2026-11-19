@@ -6,6 +6,8 @@
 #include "PianoKeyboard.h"
 #include "core/PianoAudioEngine.h"
 #include "core/NoteTracker.h"
+#include "core/MidiInputHandler.h"
+#include "core/NoteToKeyRouter.h"
 
 class MainComponent : public juce::Component,
                       public juce::KeyListener,
@@ -53,6 +55,12 @@ private:
     juce::ComboBox   channelCombo;
     juce::Label      soundLabel     {"", "Sound:"};
     juce::ComboBox   soundCombo;
+
+    // Live MIDI controls
+    juce::TextButton midiOpenBtn  {"Open MIDI"};
+    juce::TextButton panicBtn     {"PANIC"};
+    juce::Label      midiStatusLabel {"", "MIDI: disconnected"};
+    juce::Label      lastMidiLabel   {"", "Last: --"};
     
     // Piano panel header
     juce::Label      pianoTitle   {"", "Interactive Piano Keybed"};
@@ -90,6 +98,14 @@ private:
     // ── Audio Engine ──────────────────────────────────────────────────────────
     std::unique_ptr<Core::PianoAudioEngine> audioEngine;
 
+    // ── Live MIDI Input pipeline ──────────────────────────────────────────────
+    Core::MidiInputHandler midiHandler;
+    Core::NoteToKeyRouter  keyRouter;
+    juce::MidiDeviceListConnection midiDeviceListConnection;
+    juce::Array<juce::MidiDeviceInfo> availableMidiDevices;
+    juce::String connectedMidiIdentifier;
+    juce::String midiOpenError;
+
     // Audio toggle button
     juce::TextButton audioToggleBtn {"🔊 Audio: ON"};
 
@@ -104,6 +120,13 @@ private:
     void setupStyle();
     void setupCallbacks();
     void setupAudio();
+    void setupLiveMidi();
+    void refreshMidiDevices();
+    void openSelectedMidiDevice();
+    void closeMidiDevice();
+    void panicAll();
+    void handleMidiEvent(const Core::MidiNoteEvent& event);
+    void updateMidiStatus();
     void switchTab(ActiveTab newTab);
     void setKeyCountMode(int whiteKeys, juce::TextButton& activeBtn);
     void drawKeyboardMatrix(juce::Graphics& g, juce::Rectangle<int> bounds);

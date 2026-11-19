@@ -29,6 +29,8 @@ MainComponent::MainComponent() {
         stdMap[note] = key.toStdString();
     }
     noteTracker.setMapping(stdMap);
+    // Same mapping drives the live MIDI -> PC key router (no duplicate system).
+    keyRouter.setMapping(stdMap);
 
     // Route NoteTracker events to the audio engine
     noteTracker.onNoteOn = [this](int note, int velocity) {
@@ -67,12 +69,28 @@ MainComponent::MainComponent() {
         c->setColour(juce::ComboBox::outlineColourId, Theme::panelBorder);
         addAndMakeVisible(c);
     }
-    midiInputCombo.addItem("All Connected MIDI Devices (0)", 1);
-    midiInputCombo.setSelectedId(1);
+    // Channel selection is real: id 1 = Omni, id 2..17 = channels 1..16
     channelCombo.addItem("Omni (All)", 1);
+    for (int ch = 1; ch <= 16; ++ch) {
+        channelCombo.addItem("Channel " + juce::String(ch), ch + 1);
+    }
     channelCombo.setSelectedId(1);
     soundCombo.addItem("Acoustic Grand Piano", 1);
     soundCombo.setSelectedId(1);
+
+    // Live MIDI controls (do not remove any existing controls)
+    for (auto* b : {&midiOpenBtn, &panicBtn}) {
+        b->setColour(juce::TextButton::buttonColourId, Theme::panelBg);
+        b->setColour(juce::TextButton::textColourOffId, Theme::textPrimary);
+        addAndMakeVisible(b);
+    }
+    panicBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff5a1a1a));
+    panicBtn.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    for (auto* l : {&midiStatusLabel, &lastMidiLabel}) {
+        l->setColour(juce::Label::textColourId, Theme::textMuted);
+        l->setFont(juce::Font(11.0f));
+        addAndMakeVisible(l);
+    }
     
     pianoTitle.setColour(juce::Label::textColourId, Theme::textPrimary);
     pianoTitle.setFont(juce::Font(16.0f, juce::Font::bold));
@@ -131,11 +149,17 @@ MainComponent::MainComponent() {
 
     setupCallbacks();
     setupAudio();
+    setupLiveMidi();
     switchTab(ActiveTab::Mapping);
-    setSize(1200, 680);
+    setSize(1320, 720);
 }
 
 MainComponent::~MainComponent() {
+    // Stop input and release every OS key before anything is torn down.
+    midiDeviceListConnection.reset();
+    midiHandler.closeDevice();
+    keyRouter.panic();
+
     juce::Desktop::getInstance().removeFocusChangeListener(this);
     removeKeyListener(this);
     pianoKeyboard.removeKeyListener(this);
@@ -218,6 +242,190 @@ void MainComponent::setupAudio() {
             audioToggleBtn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff888899));
         }
     };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live MIDI Input
+// ─────────────────────────────────────────────────────────────────────────────
+
+void MainComponent::setupLiveMidi() {
+    // AsyncUpdater guarantees this callback runs on the message thread.
+    midiHandler.setEventCallback([this](const Core::MidiNoteEvent& event) {
+        handleMidiEvent(event);
+    });
+
+    // Hot-plug / disconnect notifications may arrive on a system thread.
+    // SafePointer prevents a queued lambda from touching a destroyed component.
+    midiDeviceListConnection = juce::MidiDeviceListConnection::make(
+        [safeThis = juce::Component::SafePointer<MainComponent>(this)] {
+            juce::MessageManager::callAsync([safeThis] {
+                if (auto* self = safeThis.getComponent()) self->refreshMidiDevices();
+            });
+        });
+
+    midiOpenBtn.onClick = [this] {
+        if (midiHandler.isConnected()) closeMidiDevice();
+        else openSelectedMidiDevice();
+    };
+
+    panicBtn.onClick = [this] {
+        panicAll();
+        midiStatusLabel.setText("MIDI: panic - all keys released",
+                                juce::dontSendNotification);
+    };
+
+    midiInputCombo.onChange = [this] {
+        // A device switch must never leave a key held down.
+        if (midiHandler.isConnected() || keyRouter.getPressedKeyCount() > 0) {
+            panicAll();
+        }
+        if (midiInputCombo.getSelectedId() <= 1) closeMidiDevice();
+        else                                     openSelectedMidiDevice();
+    };
+
+    channelCombo.onChange = [this] {
+        const int id = channelCombo.getSelectedId();
+        midiHandler.setChannelFilter(id <= 1 ? 0 : id - 1);
+        updateMidiStatus();
+    };
+
+    refreshMidiDevices();
+}
+
+void MainComponent::refreshMidiDevices() {
+    availableMidiDevices = midiHandler.getAvailableDevices();
+    const juce::String previouslyConnected = midiHandler.getConnectedIdentifier();
+
+    midiInputCombo.clear();
+    midiInputCombo.addItem(availableMidiDevices.isEmpty()
+                               ? "No MIDI devices detected"
+                               : "-- Select MIDI input --", 1);
+
+    bool connectedStillPresent = false;
+    int selectedId = 1;
+    for (int i = 0; i < availableMidiDevices.size(); ++i) {
+        const int id = i + 2;
+        midiInputCombo.addItem(availableMidiDevices[i].name, id);
+        if (availableMidiDevices[i].identifier == previouslyConnected) {
+            connectedStillPresent = true;
+            selectedId = id;
+        }
+    }
+
+    if (!previouslyConnected.isEmpty() && !connectedStillPresent) {
+        // Physical device unplugged: release everything before closing.
+        keyRouter.panic();
+        noteTracker.releaseAllNotes();
+        if (audioEngine) audioEngine->allNotesOff();
+        midiHandler.closeDevice();
+        connectedMidiIdentifier.clear();
+        midiOpenError.clear();
+        syncVisualKeys();
+        midiStatusLabel.setText("MIDI: device disconnected - keys released",
+                                juce::dontSendNotification);
+    }
+
+    midiInputCombo.setSelectedId(selectedId, juce::dontSendNotification);
+    updateMidiStatus();
+}
+
+void MainComponent::openSelectedMidiDevice() {
+    const int id = midiInputCombo.getSelectedId();
+    if (id <= 1 || id - 2 >= availableMidiDevices.size()) {
+        midiOpenError = "no device selected";
+        updateMidiStatus();
+        return;
+    }
+
+    const auto info = availableMidiDevices[id - 2];
+
+    // Never carry pressed keys across a (re)connect.
+    keyRouter.panic();
+    noteTracker.releaseAllNotes();
+    if (audioEngine) audioEngine->allNotesOff();
+    midiHandler.closeDevice();
+
+    if (!midiHandler.openDevice(info.identifier)) {
+        // WinMM/Yamaha reports MMSYSERR_NOMEM (7) when the port is held by
+        // another process (verified: browser Web MIDI / another app), not when
+        // RAM is actually exhausted. Store the actionable cause for the status.
+        midiOpenError = "port unavailable - '" + info.name +
+                        "' may be open in another app; close it and retry";
+        updateMidiStatus();
+        return;
+    }
+
+    midiOpenError.clear();
+    connectedMidiIdentifier = info.identifier;
+    midiStatusLabel.setText("MIDI: connected to " + info.name,
+                            juce::dontSendNotification);
+    updateMidiStatus();
+}
+
+void MainComponent::closeMidiDevice() {
+    if (midiHandler.isConnected()) {
+        keyRouter.panic();
+        noteTracker.releaseAllNotes();
+        if (audioEngine) audioEngine->allNotesOff();
+        syncVisualKeys();
+    }
+    midiHandler.closeDevice();
+    connectedMidiIdentifier.clear();
+    midiOpenError.clear();
+    updateMidiStatus();
+}
+
+void MainComponent::panicAll() {
+    keyRouter.panic();                 // OS key-up for every key Keydium pressed
+    noteTracker.releaseAllNotes();     // clear note state for all sources
+    if (audioEngine) audioEngine->allNotesOff();
+    syncVisualKeys();
+    updateMidiStatus();
+}
+
+void MainComponent::handleMidiEvent(const Core::MidiNoteEvent& event) {
+    // Message thread only. NoteTracker keeps the existing note mapping, audio
+    // monitoring and virtual-piano highlighting driven by real MIDI events.
+    if (event.noteOn) {
+        noteTracker.noteOn(event.note, Core::NoteSource::MidiDevice, event.velocity);
+        keyRouter.noteOn(event.note, event.velocity);
+    } else {
+        noteTracker.noteOff(event.note, Core::NoteSource::MidiDevice);
+        keyRouter.noteOff(event.note);
+    }
+    syncVisualKeys();
+
+    auto it = noteToKeyMap.find(event.note);
+    const juce::String keyName = it != noteToKeyMap.end() ? it->second : "--";
+    lastMidiLabel.setText("Last: " + juce::String(event.note) + " " +
+                          (event.noteOn ? "ON" : "OFF") + " v" +
+                          juce::String(event.velocity) + " ch" +
+                          juce::String(event.channel) + " -> " + keyName,
+                          juce::dontSendNotification);
+    updateMidiStatus();
+}
+
+void MainComponent::updateMidiStatus() {
+    const juce::String held = juce::String(keyRouter.getPressedKeyCount());
+    if (midiHandler.isConnected()) {
+        const int ch = midiHandler.getChannelFilter();
+        const juce::String channelText = (ch == 0)
+            ? "Omni" : ("CH " + juce::String(ch));
+        midiStatusLabel.setText("MIDI: " + midiHandler.getConnectedDeviceName() +
+                                " | " + channelText + " | keys held: " + held,
+                                juce::dontSendNotification);
+        midiOpenBtn.setButtonText("Close MIDI");
+    } else {
+        if (midiOpenError.isNotEmpty()) {
+            midiStatusLabel.setText("MIDI: " + midiOpenError +
+                                    " | keys held: " + held,
+                                    juce::dontSendNotification);
+        } else {
+            midiStatusLabel.setText("MIDI: disconnected | keys held: " + held,
+                                    juce::dontSendNotification);
+        }
+        midiOpenBtn.setButtonText("Open MIDI");
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -433,6 +641,14 @@ void MainComponent::promptAssignKey(int midiNote) {
             }
 
             pianoKeyboard.setKeyMapping(noteToKeyMap);
+
+            // Keep both mapping consumers in sync with the single source of truth.
+            std::map<int, std::string> updatedMap;
+            for (const auto& [n, k] : noteToKeyMap) {
+                updatedMap[n] = k.toStdString();
+            }
+            keyRouter.setMapping(updatedMap);
+
             syncVisualKeys();
             repaint();
         }
@@ -565,8 +781,12 @@ void MainComponent::resized() {
     midiBar.removeFromLeft(20);
     soundLabel.setBounds(midiBar.removeFromLeft(50));
     soundCombo.setBounds(midiBar.removeFromLeft(180));
-    // Audio toggle button — right end of MIDI bar
-    audioToggleBtn.setBounds(midiBar.removeFromRight(midiBar.getWidth()).reduced(4, 0));
+
+    // Right-hand controls: status, connect, panic, audio toggle
+    audioToggleBtn.setBounds(midiBar.removeFromRight(130).reduced(4, 0));
+    panicBtn.setBounds(midiBar.removeFromRight(70).reduced(4, 0));
+    midiOpenBtn.setBounds(midiBar.removeFromRight(80).reduced(4, 0));
+    midiStatusLabel.setBounds(midiBar.removeFromRight(200).reduced(4, 0));
     
     // BOTTOM MATRIX PANEL (170px)
     auto bottomPanel = area.removeFromBottom(170);
@@ -574,6 +794,7 @@ void MainComponent::resized() {
     auto bottomHeader = bottomPanel.removeFromTop(24);
     matrixTitle.setBounds(bottomHeader.removeFromLeft(300));
     activeKeysLabel.setBounds(bottomHeader.removeFromRight(120));
+    lastMidiLabel.setBounds(bottomHeader.removeFromRight(280));
     matrixSub.setBounds(bottomPanel.removeFromTop(16));
     matrixArea = bottomPanel.reduced(0, 4);
     

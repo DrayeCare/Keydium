@@ -129,7 +129,7 @@ void NoteTracker::releaseAllPhysicalKeys() {
 void NoteTracker::releaseAllNotes() {
     heldPhysicalKeys.clear();
 
-    for (int note = 0; note < 127; ++note) {
+    for (int note = 0; note < 128; ++note) {
         if (activeSourceMask[note] != 0) {
             activeSourceMask[note] = 0;
             if (onNoteOff) {

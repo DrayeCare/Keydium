@@ -18,7 +18,7 @@
 **Keydium** is a desktop application designed to translate MIDI signals into simulated computer keyboard inputs. Whether performing live on a digital piano or automating playback from standard `.mid` files, Keydium acts as a seamless bridge to control games and software that rely solely on keyboard inputs.
 
 > [!NOTE]
-> **Early Prototype Notice:** The current repository contains an initial GUI prototype. While the virtual piano and mapping interface are functional for visual inspection, the backend pipeline for physical MIDI input and OS-level keyboard simulation is still under active development.
+> **Hardware note:** Live MIDI input, device selection, channel filtering, note mapping to simulated PC keys, active-note visualisation and Panic are implemented. MIDI input ports are exclusive: if another application (browser Web MIDI, DAW, another Keydium instance) already holds the port, the open fails. On the Yamaha USB MIDI class driver under WinMM this surfaces as `MMSYSERR_NOMEM` (code 7), not the expected `MMSYSERR_ALLOCATED` (code 4) — close the other application and press Open MIDI again.
 
 ---
 

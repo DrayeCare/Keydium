@@ -41,6 +41,9 @@ target_sources(Keydium PRIVATE
     src/gui/PianoKeyboard.cpp
     src/core/PianoAudioEngine.cpp
     src/core/NoteTracker.cpp
+    src/core/KeySimulator.cpp
+    src/core/MidiInputHandler.cpp
+    src/core/NoteToKeyRouter.cpp
 )
 
 target_include_directories(Keydium PRIVATE include)
@@ -55,6 +58,7 @@ target_compile_definitions(Keydium PRIVATE
 target_link_libraries(Keydium PRIVATE
     juce::juce_audio_utils
     juce::juce_gui_extra
+    juce::juce_audio_devices
     FluidSynth::FluidSynth
     PUBLIC
     juce::juce_recommended_config_flags
@@ -109,4 +113,41 @@ foreach(DLL ${FLUID_DLLS})
         COMMENT "Copying ${DLL} to test output directory"
     )
 endforeach()
+
+# ─── Live MIDI Input unit tests (no physical device required) ────────────────
+add_executable(MidiLiveInputTest
+    tests/test_midi_live.cpp
+    src/core/MidiInputHandler.cpp
+    src/core/NoteToKeyRouter.cpp
+    src/core/KeySimulator.cpp
+)
+
+target_include_directories(MidiLiveInputTest PRIVATE include)
+
+target_compile_definitions(MidiLiveInputTest PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+
+target_link_libraries(MidiLiveInputTest PRIVATE
+    juce::juce_audio_devices
+    juce::juce_events
+    juce::juce_core
+    juce::juce_recommended_config_flags
+)
+
+# ─── Isolated diagnostic: never built into the app, probe only ───────────────
+add_executable(MidiOpenDiagnostic tests/diagnose_midi_open.cpp)
+
+target_compile_definitions(MidiOpenDiagnostic PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+
+target_link_libraries(MidiOpenDiagnostic PRIVATE
+    juce::juce_audio_devices
+    juce::juce_events
+    juce::juce_core
+    juce::juce_recommended_config_flags
+)
 

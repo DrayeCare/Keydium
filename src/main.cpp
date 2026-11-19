@@ -22,7 +22,7 @@ public:
             setUsingNativeTitleBar(true);
             setContentOwned(new MainComponent(), true);
             setResizable(true, true);
-            centreWithSize(1200, 680); // <-- UKURAN BARU BIAR GAK KETUTUP DOCK
+            centreWithSize(1320, 720);
             setVisible(true);
         }
 
