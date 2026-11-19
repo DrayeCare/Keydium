@@ -13,8 +13,10 @@
 #endif
 
 #include <iostream>
+#include <atomic>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -41,6 +43,41 @@ namespace {
     void record(int vk, bool down) { recorded.push_back({ vk, down }); }
 
     void clearRecorded() { recorded.clear(); }
+
+#ifdef _WIN32
+    // Low-level keyboard hook capture: proves what the OS actually received
+    // from SendInput (scan code, up/down flag, translated virtual key).
+    struct LlEvent { DWORD vkCode; DWORD scanCode; DWORD flags; };
+    std::vector<LlEvent> llEvents;
+    std::atomic<int> llInjectedCount { 0 };
+    std::atomic<bool> llHookReady { false };
+    DWORD llThreadId = 0;
+
+    LRESULT CALLBACK llKeyboardProc(int code, WPARAM wp, LPARAM lp) {
+        if (code == HC_ACTION) {
+            const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lp);
+            if ((k->flags & LLKHF_INJECTED) != 0) {
+                llEvents.push_back({ k->vkCode, k->scanCode, k->flags });
+                llInjectedCount.fetch_add(1);
+            }
+        }
+        return CallNextHookEx(nullptr, code, wp, lp);
+    }
+
+    void llHookThreadMain() {
+        llThreadId = GetCurrentThreadId();
+        HHOOK hook = SetWindowsHookExW(WH_KEYBOARD_LL, llKeyboardProc,
+                                       GetModuleHandleW(nullptr), 0);
+        llHookReady.store(hook != nullptr);
+        if (!hook) return;
+        MSG msg;
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        UnhookWindowsHookEx(hook);
+    }
+#endif
 }
 
 int main() {
@@ -369,6 +406,58 @@ int main() {
             check(router.getPressedKeyCount() == 0, "shared key: nothing held at the end");
         }
     }
+
+    // -------------------------------------------------------------------------
+#ifdef _WIN32
+    section("14. Scan-code injection correctness (Windows regression)");
+    {
+        llEvents.clear();
+        llInjectedCount.store(0);
+        llHookReady.store(false);
+        std::thread hookThread(llHookThreadMain);
+        for (int i = 0; i < 200 && !llHookReady.load(); ++i) Sleep(10);
+        check(llHookReady.load(), "low-level keyboard hook installed");
+
+        const UINT scanA     = MapVirtualKeyW(0x41, MAPVK_VK_TO_VSC);
+        const UINT scanSpace = MapVirtualKeyW(0x20, MAPVK_VK_TO_VSC);
+        check(scanA != 0 && scanSpace != 0, "MapVirtualKeyW yields scan codes for A and Space");
+
+        bool downOk = Core::KeySimulator::pressKey(0x41);
+        bool upOk   = Core::KeySimulator::releaseKey(0x41);
+        bool spDown = Core::KeySimulator::pressKey(0x20);
+        bool spUp   = Core::KeySimulator::releaseKey(0x20);
+
+        // A virtual key with no scan-code mapping must be rejected BEFORE
+        // SendInput, with the synthetic NO_SCANCODE error.
+        Core::KeySimulator::clearLastError();
+        bool badOk   = Core::KeySimulator::pressKey(0x07); // undefined VK
+        DWORD badErr = Core::KeySimulator::getLastError();
+
+        // Wait until the hook thread observed all four injected events.
+        for (int i = 0; i < 300 && llInjectedCount.load() < 4; ++i) Sleep(10);
+        PostThreadMessageW(llThreadId, WM_QUIT, 0, 0);
+        hookThread.join();
+
+        check(downOk && upOk && spDown && spUp, "pressKey/releaseKey succeed for A and Space");
+        check(!badOk && badErr == Core::KeySimulator::NO_SCANCODE,
+              "unmapped VK rejected before SendInput with NO_SCANCODE");
+        check(llEvents.size() == 4, "exactly 4 injected events observed (none for invalid VK)");
+        if (llEvents.size() == 4) {
+            check(llEvents[0].scanCode == scanA && (llEvents[0].flags & LLKHF_UP) == 0,
+                  "A key-down carries the real scan code, no UP flag");
+            check(llEvents[0].vkCode == 0x41,
+                  "A key-down scan code translates back to VK_A (Notepad path intact)");
+            check(llEvents[1].scanCode == scanA && (llEvents[1].flags & LLKHF_UP) != 0,
+                  "A key-up carries the real scan code + UP flag");
+            check(llEvents[1].vkCode == 0x41, "A key-up translates back to VK_A");
+            check(llEvents[2].scanCode == scanSpace && (llEvents[2].flags & LLKHF_UP) == 0,
+                  "Space key-down scan code correct");
+            check(llEvents[3].scanCode == scanSpace && (llEvents[3].flags & LLKHF_UP) != 0,
+                  "Space key-up scan code + UP flag");
+            check((llEvents[0].flags & LLKHF_EXTENDED) == 0, "A is non-extended");
+        }
+    }
+#endif
 
     std::cout << "\n=== " << (checksRun - checksFailed) << "/" << checksRun
               << " checks passed ===\n";

@@ -33,9 +33,22 @@ namespace Core {
         if (virtualKey <= 0) { lastError = 0; return false; }
 
         #ifdef _WIN32
+            // Scan-code based injection: a VK-only SendInput carries scan
+            // code 0, which Chrome surfaces as an empty KeyboardEvent.code.
+            // KEYEVENTF_SCANCODE makes wScan identify the key, exactly like
+            // a physical keyboard press.
+            const UINT scanCode = MapVirtualKeyW(static_cast<UINT>(virtualKey), MAPVK_VK_TO_VSC);
+            if (scanCode == 0) { lastError = NO_SCANCODE; return false; }
+
             INPUT input = {};
             input.type = INPUT_KEYBOARD;
-            input.ki.wVk = static_cast<WORD>(virtualKey);
+            input.ki.wVk = 0; // ignored by the system when KEYEVENTF_SCANCODE is set
+            input.ki.wScan = static_cast<WORD>(scanCode & 0xFF);
+            input.ki.dwFlags = KEYEVENTF_SCANCODE;
+            // Extended keys (0xE0 prefix) need KEYEVENTF_EXTENDEDKEY. The
+            // supported mapping (A-Z, 0-9, space) is entirely non-extended;
+            // this guard only matters if the mapping ever grows.
+            if ((scanCode & 0xFF00) != 0) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
             if (SendInput(1, &input, sizeof(INPUT)) != 1) {
                 lastError = static_cast<unsigned long>(GetLastError());
                 return false;
@@ -61,10 +74,16 @@ namespace Core {
         if (virtualKey <= 0) { lastError = 0; return false; }
 
         #ifdef _WIN32
+            // Same scan-code path as pressKey, with KEYEVENTF_KEYUP added.
+            const UINT scanCode = MapVirtualKeyW(static_cast<UINT>(virtualKey), MAPVK_VK_TO_VSC);
+            if (scanCode == 0) { lastError = NO_SCANCODE; return false; }
+
             INPUT input = {};
             input.type = INPUT_KEYBOARD;
-            input.ki.wVk = static_cast<WORD>(virtualKey);
-            input.ki.dwFlags = KEYEVENTF_KEYUP;
+            input.ki.wVk = 0; // ignored by the system when KEYEVENTF_SCANCODE is set
+            input.ki.wScan = static_cast<WORD>(scanCode & 0xFF);
+            input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+            if ((scanCode & 0xFF00) != 0) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
             if (SendInput(1, &input, sizeof(INPUT)) != 1) {
                 lastError = static_cast<unsigned long>(GetLastError());
                 return false;

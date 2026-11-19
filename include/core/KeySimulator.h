@@ -14,10 +14,18 @@ namespace Core {
         // Returns 0 when the name is unsupported.
         static int virtualKeyFromName(const std::string& keyName);
 
-        // Diagnostics-capable API. Returns false when the OS rejected the
-        // input; getLastError() then carries the platform error code.
+        // Diagnostics-capable API. The virtual key is translated to a hardware
+        // scan code (MapVirtualKeyW) and injected with KEYEVENTF_SCANCODE so
+        // targets that read physical key positions (Chrome KeyboardEvent.code,
+        // games using raw input) see the same events as a real keyboard.
+        // Returns false when the OS rejected the input or the key has no
+        // scan-code mapping; getLastError() then carries the error code.
         static bool pressKey(int virtualKey);
         static bool releaseKey(int virtualKey);
+
+        // Synthetic error: the virtual key has no scan-code mapping in the
+        // active keyboard layout. SendInput is never called for such keys.
+        static constexpr unsigned long NO_SCANCODE = 0xE0000001UL;
 
         static unsigned long getLastError() noexcept;
         static void clearLastError() noexcept;
