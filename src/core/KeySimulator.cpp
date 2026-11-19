@@ -91,5 +91,6 @@ namespace Core {
 
     unsigned long KeySimulator::getLastError() noexcept { return lastError; }
     void KeySimulator::clearLastError() noexcept { lastError = 0; }
+    void KeySimulator::setLastError(unsigned long code) noexcept { lastError = code; }
 
 } // namespace Core

@@ -50,18 +50,24 @@ void NoteToKeyRouter::noteOn(int note, int velocity) {
     if (keysForNote.count(virtualKey) != 0) return; // duplicate Note On
 
     keysForNote.insert(virtualKey);
-    int& refCount = keyRefCount[virtualKey];
-    if (refCount == 0) {
+    if (keyRefCount[virtualKey] == 0) {
         KeySimulator::clearLastError();
         sendKey(virtualKey, true);
         const auto osError = KeySimulator::getLastError();
         if (osError != 0) {
+            // B1 fix: a failed press must leave no trace. Without this rollback
+            // the note kept a phantom hold: retries were blocked, and its later
+            // Note Off decremented another note's ref-count, releasing a key
+            // that was still legitimately held.
+            keysForNote.erase(virtualKey);
+            if (keysForNote.empty()) noteToPressedKeys.erase(note);
+            keyRefCount.erase(virtualKey); // drop the zero-count entry
             lastDiagnostic = "Key press failed (vk=" + std::to_string(virtualKey) +
                              ", os error=" + std::to_string(osError) + ")";
             return;
         }
     }
-    ++refCount;
+    ++keyRefCount[virtualKey];
     lastDiagnostic = "Note " + std::to_string(note) + " ON -> key " + mappingIt->second;
 }
 

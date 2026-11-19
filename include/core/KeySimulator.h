@@ -22,6 +22,10 @@ namespace Core {
         static unsigned long getLastError() noexcept;
         static void clearLastError() noexcept;
 
+        // Diagnostic/test hook: overwrite the stored platform error code so
+        // unit tests can simulate an OS key-press rejection (e.g. UIPI).
+        static void setLastError(unsigned long code) noexcept;
+
     private:
         static unsigned long lastError;
     };

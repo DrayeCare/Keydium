@@ -308,6 +308,68 @@ int main() {
         }
     } // destructor: no dangling callback, no crash
 
+    // -------------------------------------------------------------------------
+    section("13. SendInput failure consistency (B1 regression)");
+    {
+        // Sink that can simulate an OS key-press rejection (e.g. UIPI
+        // ERROR_ACCESS_DENIED when the foreground game runs elevated).
+        bool failNextPress = false;
+        auto failingSink = [&failNextPress](int vk, bool down) {
+            record(vk, down);
+            if (down && failNextPress) {
+                failNextPress = false;
+                Core::KeySimulator::setLastError(5); // ERROR_ACCESS_DENIED
+            } else {
+                Core::KeySimulator::clearLastError();
+            }
+        };
+
+        // A: a failed press leaves no phantom hold, Note Off is inert,
+        //    and a later retry can still press the key.
+        {
+            Core::NoteToKeyRouter router(failingSink);
+            router.setMapping({ {60, "A"} });
+            failNextPress = true;
+            clearRecorded();
+            router.noteOn(60, 100);
+            check(recorded == Events({ {0x41, true} }), "failed press attempted exactly once");
+            check(router.getPressedKeyCount() == 0, "failed press leaves no phantom held key");
+            clearRecorded();
+            router.noteOff(60);
+            check(recorded.empty(), "Note Off after failed press sends no key-up");
+            router.noteOn(60, 100); // sink now succeeds
+            check(recorded == Events({ {0x41, true} }), "retry after failed press works");
+            check(router.getPressedKeyCount() == 1, "retry holds the key");
+            clearRecorded();
+            router.noteOff(60);
+            check(recorded == Events({ {0x41, false} }), "release after retry is clean");
+            check(router.getPressedKeyCount() == 0, "nothing held after final release");
+        }
+
+        // B: two MIDI notes share one PC key; the failed note's Note Off
+        //    must never decrement the successful note's ref-count.
+        {
+            Core::NoteToKeyRouter router(failingSink);
+            router.setMapping({ {60, "A"}, {72, "A"} });
+            failNextPress = true;
+            clearRecorded();
+            router.noteOn(60, 100);          // press fails
+            check(router.getPressedKeyCount() == 0, "shared key: failed note holds nothing");
+            clearRecorded();
+            router.noteOn(72, 100);          // press succeeds
+            check(recorded == Events({ {0x41, true} }), "shared key: second note presses the key");
+            check(router.getPressedKeyCount() == 1, "shared key: one holder tracked");
+            clearRecorded();
+            router.noteOff(60);              // failed note releases: must be inert
+            check(recorded.empty(), "shared key: failed note's Note Off does NOT release the key");
+            check(router.getPressedKeyCount() == 1, "shared key: successful note still holds the key");
+            clearRecorded();
+            router.noteOff(72);
+            check(recorded == Events({ {0x41, false} }), "shared key: last real holder releases the key");
+            check(router.getPressedKeyCount() == 0, "shared key: nothing held at the end");
+        }
+    }
+
     std::cout << "\n=== " << (checksRun - checksFailed) << "/" << checksRun
               << " checks passed ===\n";
     if (checksFailed != 0) {

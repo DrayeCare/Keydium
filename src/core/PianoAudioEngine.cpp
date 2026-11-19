@@ -110,8 +110,10 @@ struct PianoAudioEngine::Impl {
         // Use custom callback audio driver to downmix all stereo buffers to mono
         audioDriver = new_fluid_audio_driver2(settings, audioCallback, this);
         if (!audioDriver) {
-            // Fallback to winmm if dsound driver failed
-            fluid_settings_setstr(settings, "audio.driver", "winmm");
+            // B2 fix: FluidSynth has no "winmm" driver. The official Windows
+            // build ships dsound, waveout and wasapi; waveout is the safest,
+            // most widely supported fallback when dsound fails.
+            fluid_settings_setstr(settings, "audio.driver", "waveout");
             audioDriver = new_fluid_audio_driver2(settings, audioCallback, this);
         }
 

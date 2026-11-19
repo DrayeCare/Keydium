@@ -109,8 +109,9 @@ MainComponent::MainComponent() {
     octaveLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(octaveLabel);
     
-    keys61Btn.setColour(juce::TextButton::buttonColourId, Theme::accent);
-    keys61Btn.setColour(juce::TextButton::textColourOffId, juce::Colours::black);
+    // B3 fix: actually apply the 61-key mode so the highlighted button and the
+    // rendered keybed agree from startup (36 white keys == 61 keys from C2).
+    setKeyCountMode(36, keys61Btn);
     
     addAndMakeVisible(pianoKeyboard);
     

@@ -1,11 +1,13 @@
 #include "core/PianoAudioEngine.h"
 #include "core/NoteTracker.h"
 
+#include <fluidsynth.h>
 #include <iostream>
 #include <chrono>
 #include <thread>
 #include <cassert>
 #include <vector>
+#include <string>
 #include <cmath>
 
 int main() {
@@ -57,6 +59,33 @@ int main() {
         assert(hasAudio); // Verified sound was generated
         engine.noteOff(60);
         std::cout << "  -> Passed: Mono downmix verified; Left and Right buffers are mathematically identical." << std::endl;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Test 1b (B2 regression): the audio driver fallback must be a driver
+    // that actually exists in this FluidSynth build ("winmm" does not).
+    // ─────────────────────────────────────────────────────────────────────────
+    std::cout << "[Test 1b] Verifying FluidSynth audio driver options (B2 fallback regression)..." << std::endl;
+    {
+        fluid_settings_t* probeSettings = new_fluid_settings();
+        assert(probeSettings != nullptr);
+        std::vector<std::string> drivers;
+        fluid_settings_foreach_option(probeSettings, "audio.driver", &drivers,
+            [](void* data, const char*, const char* option) {
+                static_cast<std::vector<std::string>*>(data)->push_back(option);
+            });
+        delete_fluid_settings(probeSettings);
+
+        bool hasDsound = false, hasWaveout = false, hasWinmm = false;
+        for (const auto& d : drivers) {
+            if (d == "dsound")  hasDsound = true;
+            if (d == "waveout") hasWaveout = true;
+            if (d == "winmm")   hasWinmm = true;
+        }
+        assert(hasDsound);   // primary driver used by initialise()
+        assert(hasWaveout);  // fallback driver used by initialise()
+        assert(!hasWinmm);   // the old, invalid fallback name must not exist
+        std::cout << "  -> Passed: dsound + waveout available; 'winmm' is not a FluidSynth driver." << std::endl;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
